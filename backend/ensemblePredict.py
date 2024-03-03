@@ -213,7 +213,12 @@ def preprocess_single_pe(pePaths):
             opcodes = [i.mnemonic for i in cs.disasm(data, 0x1000)]
             
             opFreqVec = [opcodes.count(opcode) for opcode in set(opcodes)]
-            opFreqVec = opFreqVec + [0] * (50 - len(opFreqVec))  # Pad to ensure length is 50
+            
+            # Pad to ensure length is at least 50
+            opFreqVec = opFreqVec + [0] * max(0, 50 - len(opFreqVec))
+            
+            # Trim to ensure length is exactly 50
+            opFreqVec = opFreqVec[:50]
             
             mlInputs.append(opFreqVec)
 
@@ -232,6 +237,7 @@ def preprocess_single_pe(pePaths):
     mlInputs = [mlInputs, hashSeqs]
 
     return mlInputs
+
 
 
 ## Function taking paths to PE files as input, and returning ensemble model predictions
@@ -273,7 +279,7 @@ def predict_single_pe(pe_path):
     except Exception as e:
         return {'error': str(e)}
 
-        
+
 # if __name__ == "__main__":
 #     if len(sys.argv) != 2:
 #         print("Usage: python ensemblePredict.py <path_to_pe_file>")
