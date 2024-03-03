@@ -197,9 +197,6 @@ def hashWordSequences(sequences, maxSeqLen, vocabSize):
     return hashedSeqs
 
 
-# Function takes list of paths to PE files and returns a list
-# of lists, with the first index as input for the opcode model,
-# and the second index as input for the strings model
 def preprocess_single_pe(pePaths):
     mlInputs = []
 

@@ -41,6 +41,7 @@ def upload_file():
             # Call ensemblePredict.py with the file path and get the prediction
             result = predict_single_pe(file_path)
 
+            
             # Return the prediction as JSON
             return jsonify(result)
 
