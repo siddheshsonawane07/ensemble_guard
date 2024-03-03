@@ -1,9 +1,10 @@
-__author__ = "Laurence Elliott - 16600748"
 
 import os, math, string, pefile, time, threading
 import tkinter as tk
 import numpy as np
 from capstone import *
+from flask import Flask, render_template, request, jsonify
+import subprocess
 # from keras.models import Sequential, Model
 
 from tensorflow.keras.models import Sequential, Model
@@ -17,6 +18,9 @@ from tkinter import messagebox
 from tkinter.filedialog import askopenfilenames
 from tkinter.ttk import Progressbar
 
+import pefile
+from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+from tensorflow.keras.layers import Input
 ## Defining models (opcode, strings, and ensemble)
 
 # Defining the opcode model
@@ -196,16 +200,9 @@ def hashWordSequences(sequences, maxSeqLen, vocabSize):
 # Function takes list of paths to PE files and returns a list
 # of lists, with the first index as input for the opcode model,
 # and the second index as input for the strings model
-def preprocessPEs(pePaths):
+def preprocess_single_pe(pePaths):
     mlInputs = []
 
-    # Get percentage opcode composition of file assembley code for the top 50 most common opcodes
-    # in each file
-    opCodeSet = set()
-    opCodeDicts = []
-    opCodeFreqs = {}
-
-    count = 1
     for sample in pePaths:
         try:
             pe = pefile.PE(sample, fast_load=True)
@@ -213,66 +210,26 @@ def preprocessPEs(pePaths):
             data = pe.get_memory_mapped_image()[entryPoint:]
             cs = Cs(CS_ARCH_X86, CS_MODE_32)
 
-            opcodes = []
-            for i in cs.disasm(data, 0x1000):
-                opcodes.append(i.mnemonic)
-
-            opcodeDict = {}
-            total = len(opcodes)
-
-            opCodeSet = set(list(opCodeSet) + opcodes)
-            for opcode in opCodeSet:
-                freq = 1
-                for op in opcodes:
-                    if opcode == op:
-                        freq += 1
-                try:
-                    opCodeFreqs[opcode] += freq
-                except:
-                    opCodeFreqs[opcode] = freq
-
-                opcodeDict[opcode] = round((freq / total) * 100, 2)
-
-            opCodeDicts.append(opcodeDict)
-            count += 1
+            opcodes = [i.mnemonic for i in cs.disasm(data, 0x1000)]
+            
+            opFreqVec = [opcodes.count(opcode) for opcode in set(opcodes)]
+            opFreqVec = opFreqVec + [0] * (50 - len(opFreqVec))  # Pad to ensure length is 50
+            
+            mlInputs.append(opFreqVec)
 
         except Exception as e:
             print(e)
 
-    opCodeFreqsSorted = np.genfromtxt("top50opcodes.csv", delimiter=",", dtype="str")[1:, 0]
-
-    count = 0
-    for opDict in opCodeDicts:
-        opFreqVec = []
-        for opcode in opCodeFreqsSorted[:50]:
-            try:
-                opFreqVec.append(opDict[opcode])
-            except Exception as e:
-                if str(type(e)) == "<class 'KeyError'>":
-                    opFreqVec.append(0.0)
-
-        mlInputs.append([np.array(opFreqVec)])
-        count += 1
-
-    # Get words from utf-8 strings decoded from raw bytes of files,
-    # and hash to vectors of integers
-    sequences = []
-    count = 0
-    for sample in pePaths:
-        sequences.append(wordSequence(sample))
-        count += 1
-
-    with open("finalVocabSize.txt", "r") as f:
-        maxVocabSize = int(f.readline())
-
-    hashSeqs = hashWordSequences(sequences, 10000, maxVocabSize)
-
-    count = 0
-    for hashSeq in hashSeqs:
-        mlInputs[count].append(np.array(hashSeq))
-        count += 1
-
     mlInputs = np.array(mlInputs)
+
+    # Assuming sequences is a list of word sequences
+    sequences = [wordSequence(sample) for sample in pePaths]
+    
+    # Assuming hashWordSequences returns a list of hashed sequences
+    hashSeqs = hashWordSequences(sequences, 10000, 15000)  # Adjust maxVocabSize accordingly
+
+    # Convert mlInputs to a list containing two elements
+    mlInputs = [mlInputs, hashSeqs]
 
     return mlInputs
 
@@ -293,32 +250,43 @@ def predictPEs(pePaths):
     return pePredictions
 
 
-if __name__ == "__main__":
-    tkRoot = tk.Tk()
-    tkRoot.title("Processing files...")
-    tkRoot.withdraw()
-    tkRoot.protocol("WM_DELETE_WINDOW", quit)
-    w = tkRoot.winfo_screenwidth()
-    h = tkRoot.winfo_screenheight()
-    size = tuple(int(pos) for pos in tkRoot.geometry().split('+')[0].split('x'))
-    x = w / 2 - size[0] / 2
-    y = h / 2 - size[1] / 2
-    tkRoot.geometry("300x1+{}+{}".format(round(x) - 150, round(y)))
+def predict_single_pe(pe_path):
+    pePaths = [pe_path]
 
-    while True:
-        try:
-            pePaths = list(askopenfilenames(filetypes=[("Windows executable files", "*.exe")]))
-            tkRoot.update()
-            tkRoot.deiconify()
-            preds = predictPEs(pePaths)
-            if len(preds) > 0:
-                classificationsStr = ""
-                for key in preds.keys():
-                    # print("'" + key + "'" + " detected as " + preds[key])
-                    classificationsStr += "'" + key + "'" + " detected as " + preds[key] + "\n\n"
-                tkRoot.withdraw()
-                messagebox.showinfo("Detections", classificationsStr)
-            else:
-                quit()
-        except Exception as e:
-            messagebox.showerror("Error", "Error: " + str(e) + "\nPlease try again...")
+    try:
+        # Preprocess the single PE file
+        preprocessed_data = preprocess_single_pe(pePaths)
+        x1 = preprocessed_data[0][0].reshape(1, 50)
+        x2 = preprocessed_data[1][0].reshape(1, 100, 100, 1)
+
+        # Define class names
+        classNames = ["benign", "malware", "ransomware"]
+
+        # Make the prediction using the ensemble model
+        prediction = modelEns.predict(x=[x1, x2])
+
+        # Get the predicted class
+        predicted_class = classNames[np.argmax(prediction)]
+
+        return {'predicted_class': predicted_class}
+
+    except Exception as e:
+        return {'error': str(e)}
+
+        
+# if __name__ == "__main__":
+#     if len(sys.argv) != 2:
+#         print("Usage: python ensemblePredict.py <path_to_pe_file>")
+#         sys.exit(1)
+
+#     pe_path = sys.argv[1]
+#     if not os.path.isfile(pe_path):
+#         print(f"Error: File not found: {pe_path}")
+#         sys.exit(1)
+
+#     result = predict_single_pe(pe_path)
+#     print(result)
+
+if __name__ == "__main__":
+    # Add any specific code for standalone execution if needed
+    pass
